@@ -1,0 +1,127 @@
+---
+
+
+  - name: Create the patch directory if it doesn't exist
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ root_user }}"
+    file:
+      path: "{{ patch_dir }}"
+      state: directory
+      owner: "{{ oracle_user }}"
+      group: "{{ oracle_install_group }}"
+      mode: 0777
+      recurse: yes
+
+  - name: Backup opatch file from grid home
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ root_user }}"
+    shell: mv "{{ grid_home }}/OPatch" "{{ grid_home }}/OPatch{{ date }}"
+    ignore_errors: true
+
+  - name: Backup opatch file from oracle home
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ root_user }}"
+    shell: mv "{{ oracle_home }}/OPatch" "{{ oracle_home }}/OPatch{{ date }}"
+    ignore_errors: true
+
+##    shell: mv "{{ grid_home }}/OPatch" "{{ grid_home }}/OPatch_orig"
+
+  - name: RAC Patching | Update required opatch utility in grid home
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ root_user }}"
+    unarchive: src={{ stage_dir }}/p6880880_180000_Linux-x86-64.zip dest={{ grid_home }} remote_src=no
+
+  - name: RAC Patching | Update opatch ownership in grid home
+    remote_user: "{{ root_user }}"
+    file: dest={{ grid_home }}/OPatch owner={{ grid_user }} group={{ oracle_install_group }} mode=0775 recurse=yes
+
+  - name: RAC Patching | Update required opatch utility in oracle home
+    remote_user: "{{ root_user }}"
+    unarchive: src={{ stage_dir }}/p6880880_180000_Linux-x86-64.zip dest={{ oracle_home }} remote_src=no
+
+  - name: RAC Patching | Update opatch ownership in oracle home
+    remote_user: "{{ root_user }}"
+    file: dest={{ oracle_home }}/OPatch owner={{ oracle_user }} group={{ oracle_install_group }} mode=0775 recurse=yes
+
+  - name: unzip required patch file
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ root_user }}"
+    unarchive: src={{ stage_dir }}/p28828717_180000_Linux-x86-64.zip dest={{ patch_dir }} remote_src=no mode=0777
+
+  - name: Create LogFile  Directory
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ root_user }}"
+    file:
+     path: /tmp/{{ patchid}}
+     state: directory
+     owner: "{{ oracle_user }}"
+     group: "{{ oracle_install_group }}"
+     mode: 0777
+
+  - name: Run OPatch Conflict Check (grid home)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    shell: "export GRID_HOME={{ grid_home }}; export PATH=$GRID_HOME/bin:$GRID_HOME/OPatch:$PATH; {{ grid_home }}/OPatch/opatch prereq CheckConflictAgainstOHWithDetail -phBaseDir {{ patch_dir }}/{{ patchid }}/{{ item }}"
+    remote_user: "{{ grid_user }}"
+    register: opatch_conflicts_gh
+    with_items:
+      - 28822489
+      - 28864593
+      - 28864607
+
+  - name: Run OPatch Conflict Check (oracle home)
+    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$PATH; {{ oracle_home }}/OPatch/opatch prereq CheckConflictAgainstOHWithDetail -phBaseDir {{ patch_dir }}/{{ patchid }}/{{ item }}"
+    remote_user: "{{ oracle_user }}"
+    register: opatch_conflicts_oh
+    with_items:
+      - 28822489
+      - 28864593
+
+  - name: copy opatch system space check files for grid home and oracle home
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    copy: src={{ stage_dir }}/{{ item }} dest={{ stage_dir }} owner="{{ oracle_user }}" group="{{ oracle_install_group }}" mode=0644
+    with_items:
+      - patch_list_dbhome.txt
+      - patch_list_gihome.txt
+
+  - name: OPatch SystemSpace Check (grid home)
+    environment: "{{ envgh }}"
+    shell: "opatch prereq CheckSystemSpace -phBaseFile {{ stage_dir }}/patch_list_gihome.txt"
+    remote_user: "{{ grid_user }}"
+    register: opatch_sysspace_ghs
+
+  - name: OPatch SystemSpace Check (oracle home)
+    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$PATH; opatch prereq CheckSystemSpace -phBaseFile {{ stage_dir }}/patch_list_dbhome.txt"
+    remote_user: "{{ oracle_user }}"
+    register: opatch_sysspace_ohs
+
+  - name: RAC Patching | check inventory for grid home (opatchauto)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ grid_user }}"
+    shell: "export GRID_HOME={{ grid_home }}; export PATH=$GRID_HOME/bin:$GRID_HOME/OPatch:$PATH; {{ grid_home }}/OPatch/opatch lsinventory -detail -oh {{ grid_home }} > {{ logdir }}/opatch_lsinventory_gh_ba.log 2>&1"
+    register: opatch_lsinventory_gh 
+
+  - name: RAC Patching | check inventory for oracle home (opatchauto)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ grid_user }}"
+    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$PATH; {{ oracle_home }}/OPatch/opatch lsinventory -detail -oh {{ oracle_home }} > {{ logdir }}/opatch_lsinventory_oh_ba.log 2>&1"
+    register: opatch_lsinventory_gh 
+
+  - name: RAC Patching | One-Off Patch Conflict Detection
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    shell: export GRID_HOME={{ grid_home }}; export PATH=$GRID_HOME/bin:$GRID_HOME/OPatch:$PATH; {{ grid_home }}/OPatch/opatchauto apply {{ patch_dir }}/{{ patchid }} -analyze
+    remote_user: "{{ root_user }}"
+    register: opatch_conflicts
+   
+  - name: RAC Patching | Patch Information for grid home (opatchauto)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ grid_user }}"
+    shell: "export GRID_HOME={{ grid_home }}; export PATH=$GRID_HOME/bin:$GRID_HOME/OPatch:$PATH; {{ grid_home }}/OPatch/opatch lspatches > {{ logdir }}/opatch_lspatches_gh_ba.log 2>&1"
+    tags: pohinfapply_gh
+    register: opatch_lspatches_gh 
+
+  - name: RAC Patching | Patch Information for database home (opatchauto)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ oracle_user }}"
+    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$PATH; {{ oracle_home }}/OPatch/opatch lspatches > {{ logdir }}/opatch_lspatches_oh_ba.log 2>&1"
+    tags: pohinfoapply_oh
+    register: opatch_lspatches_oh 

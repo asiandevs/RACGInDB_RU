@@ -1,0 +1,124 @@
+---
+
+ 
+  - name: Create the target directory if it doesn't exist
+    file:
+      path: "{{patch_dir}}"
+      state: directory
+      owner: "{{ oracle_user }}"
+      group: "{{ oracle_install_group }}"
+      mode: 0777
+
+  - name: RAC Patching | get list of database names on host
+    shell: cat /etc/oratab|grep {{ oracle_home }}|egrep ':N|:Y'|grep -v \*|cut -f1 -d':'
+    register: dblist_check
+    ignore_errors: True
+    tags: ['datapath_apply']
+
+  - name: "DEBUG1: dblist_check.results.stdout_lines by using loop"
+    debug:
+      var: dblist_check.stdout_lines
+
+  - name: RAC | get list of database names
+    when: inventory_hostname in groups['racdb01']
+    remote_user: "{{ oracle_user }}"
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$PATH; srvctl config database
+    become_user: "{{ oracle_user }}"
+    register: dbulist_check
+    ignore_errors: True
+    tags: ['datapath_apply']
+
+  - debug: var=dbulist_check.stdout_lines
+
+  - name: RAC Patching | disable cluster database databases parameter
+    when: inventory_hostname in groups['racdb01']
+    remote_user: "{{ oracle_user }}"
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; echo "alter system set cluster_database=false scope=spfile;" | sqlplus / as sysdba
+    with_items: "{{ dblist_check.stdout_lines }}"
+    tags: ['datapath_apply']
+
+  - name: RAC Patching | stop cluster database using srvctl
+    when: inventory_hostname in groups['racdb01']
+    shell: export ORACLE_HOME={{ oracle_home }}; export ORACLE_SID={{ item }}; export PATH=$PATH:$ORACLE_HOME/bin; srvctl stop database -d {{ item }}
+    remote_user: "{{ oracle_user }}"
+    with_items: "{{ dbulist_check.stdout_lines }}"
+    ignore_errors: True
+    tags: ['datapath_apply']
+
+  - name: RAC Patching | startup databases using sqlplus
+    when: inventory_hostname in groups['racdb01']
+    remote_user: "{{ oracle_user }}"
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; echo "startup;" | sqlplus / as sysdba
+    with_items: "{{ dblist_check.stdout_lines }}"
+    tags: ['datapath_apply']
+
+  - name: RAC Patching | open all pluggable databases
+    when: inventory_hostname in groups['racdb01']
+    remote_user: "{{ oracle_user }}"
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; echo "alter pluggable database all open;" | sqlplus / as sysdba
+    tags: ['datapath_apply']
+    with_items: "{{ dblist_check.stdout_lines }}"
+
+  - name: RAC Patching | Data Patch into the Database
+    when: inventory_hostname in groups['racdb01']
+    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; ./datapatch -verbose"
+    remote_user: "{{ oracle_user }}"
+    register: datapatch
+    args:
+      chdir: "{{ oracle_home }}/OPatch"
+    run_once: true
+    failed_when: datapatch.rc == 1
+    with_items: "{{ dblist_check.stdout_lines }}"
+    ignore_errors: true
+    tags: ['datapath_apply']
+
+  - name: RAC Patching | compile invalid objects
+    when: inventory_hostname in groups['racdb01']
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; echo "@utlrp.sql;" | sqlplus / as sysdba
+    remote_user: "{{ oracle_user }}"
+    register: compile
+    args:
+      chdir: "{{ oracle_home }}/rdbms/admin"
+    run_once: true
+    with_items: "{{ dblist_check.stdout_lines }}"
+    ignore_errors: true
+    tags: ['datapath_apply']
+
+###    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}{{ host_num |default('') }}; ./datapatch -apply {{ patchid }} -force -verbose"
+
+  - name: RAC Patching | enable cluster database databases parameter
+    when: inventory_hostname in groups['racdb01']
+    remote_user: "{{ oracle_user }}"
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; echo "alter system set cluster_database=true scope=spfile;" | sqlplus / as sysdba
+    with_items: "{{ dblist_check.stdout_lines }}"
+    tags: ['datapath_apply']
+
+  - name: RAC Patching | stop databases using sqlplus
+    when: inventory_hostname in groups['racdb01']
+    remote_user: "{{ oracle_user }}"
+    shell: export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin; export ORACLE_SID={{ item }}; echo "shutdown immediate;" | sqlplus / as sysdba
+    with_items: "{{ dblist_check.stdout_lines }}"
+    tags: ['datapath_apply']
+    ignore_errors: True
+
+  - name: RAC Patching | Start cluster database using srvctl
+    when: inventory_hostname in groups['racdb01']
+    shell: export ORACLE_HOME={{ oracle_home }}; export ORACLE_SID={{ item }}; export PATH=$PATH:$ORACLE_HOME/bin; srvctl start database -d {{ item }}
+    remote_user: "{{ oracle_user }}"
+    with_items: "{{ dbulist_check.stdout_lines }}"
+    ignore_errors: True
+    tags: ['datapath_apply']
+
+  - name: RAC Patching | Patch Information for grid home after apply(opatchauto)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ grid_user }}"
+    shell: "export GRID_HOME={{ grid_home }}; export PATH=$GRID_HOME/bin:$GRID_HOME/OPatch:$PATH; {{ grid_home }}/OPatch/opatch lspatches > {{ logdir }}/opatch_lspatches_gh_ar.log 2>&1"
+    tags: pohinfoapply_oh
+    register: opatch_lspatches_gh
+
+  - name: RAC Patching | Patch Information for database home (opatchauto)
+    when: ('racdb01' in group_names) or ('racdb02' in group_names)
+    remote_user: "{{ oracle_user }}"
+    shell: "export ORACLE_HOME={{ oracle_home }}; export PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch:$PATH; {{ oracle_home }}/OPatch/opatch lspatches > {{ logdir }}/opatch_lspatches_oh_ar.log 2>&1"
+    tags: pohinfoapply_oh
+    register: opatch_lspatches_oh
