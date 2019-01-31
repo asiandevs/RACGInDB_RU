@@ -1,6 +1,6 @@
 # RACGInDB_RU
 Oracle RAC Grid Infrastructure and Oracle Home patch - RU January'19 
-
+RU 18.3 to 18.5 
 
 # Release Update for RAC GI and Oracle_HOME
 
